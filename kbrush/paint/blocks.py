@@ -1,7 +1,8 @@
-"""选区、边、软的图、看：给图层（layers.py）用的。
+"""选区、边、软的图、台阶与颗粒、看：给图层（layers.py）用的。
 - 选区：blob / lasso / grow / line，都返回 shapes.Shape（能 | & - 拼）。边是噪声推过的，不是几何形。
 - 边：edges(选区, hard=, lost=) 定一条轮廓上哪段硬、哪段丢，给 layers.fill(edge=) 用；rim(选区, keep=) 取边上按顺序的一串点。
 - 软的图：soft(选区, grow=, feather=, strength=) → 0..1，给 st.layer(mask=) 当羽化过的图层蒙版，也能给 stroke(within=)。
+- 台阶与颗粒：smooth(点列) 把手勾的点抹顺；spray(区域, 喷距, rng) 一阶的蒙版，边外喷颗粒；paper(H, W) 整张的纸纹，最后 multiply 罩上。
 - 看：look(st, 路径) 存一张，旁边再存一张 64px 的。
 下面的 _qcov 那几个是 fill 用的：一块颜色的边干了长什么样，直接按边的种类和纸纹算出来。
 """
@@ -136,6 +137,41 @@ def soft(sel, grow=0, feather=0.0, strength=1.0):
         from scipy.ndimage import gaussian_filter
         m = gaussian_filter(m, feather / 2.563)                               # 一成到九成正好 feather 宽
     return np.clip(m, 0, 1) * strength
+
+
+# ---------- 台阶与颗粒 ----------
+def smooth(pts, n=3, closed=True):
+    """手勾的点列 [(x, y), ...] 抹顺：切角 n 遍，每遍点数翻一倍。closed=False 是一条开的线，两头不动。"""
+    p = np.array(pts, float)
+    for _ in range(n):
+        a, b = (p, np.roll(p, -1, 0)) if closed else (p[:-1], p[1:])
+        q = np.stack([.75 * a + .25 * b, .25 * a + .75 * b], 1).reshape(-1, 2)
+        p = q if closed else np.vstack([p[:1], q, p[-1:]])
+    return [tuple(v) for v in p]
+
+
+def spray(region, sp, rng, solid=.96, dens=.7, holes=0.):
+    """一阶的蒙版（0..1）：区域里实实地盖上 solid，边外喷出颗粒，越远越稀，大约每 sp 像素稀一截。
+    sp、solid 都可以是整张的图（各处喷多远、盖几成不一样）。dens：贴着边那圈多密。
+    holes：阶里留几成针眼，底下那阶从针眼里透出来。
+    rng：种子，或者画里那支 np.random.Generator（传进来，随机数就接着画里的顺序走）。"""
+    region = np.asarray(getattr(region, 'mask', region), bool)
+    r = np.random.default_rng(rng)
+    dout = distance_transform_edt(~region)
+    dots = (r.random(region.shape) < dens * np.exp(-dout / np.maximum(sp, .5))) & (gaussian_filter(r.random(region.shape), .5) > .47)
+    if holes:
+        g = gaussian_filter(r.random(region.shape), .7); g = (g - g.mean()) / g.std()
+        solid = np.where(g > np.quantile(g, 1 - holes), .25, solid)
+    return np.where(region, solid, dots * .95)
+
+
+def paper(H, W, seed=77):
+    """整张一张纸纹（H, W, 3），画完最后罩上去：fill(st.layer('纸', mode='multiply'), 全图, paper(H, W), edge=HARD)。
+    牙口（细的凸起）加一点横的纤维；每样东西别各撒各的噪点。"""
+    r = np.random.default_rng(seed)
+    tooth = gaussian_filter(r.standard_normal((H, W)), .7); tooth /= tooth.std()
+    fiber = gaussian_filter(r.standard_normal((H, W)), (.6, 3)); fiber /= fiber.std()
+    return np.repeat(np.clip(1 - .06 * np.clip(tooth, 0, None) - .025 * fiber, 0, 1)[..., None], 3, 2)
 
 
 # ---------- 看 ----------

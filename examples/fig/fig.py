@@ -19,7 +19,7 @@ sys.path[:0] = [KB, KB + '/paint']
 import kbrush as K
 K.set_seed(5)
 from shapes import Shape
-from blocks import lasso, line, soft, look
+from blocks import lasso, line, soft, look, smooth, spray, paper
 from layers import Stack, fill, HARD
 from scipy.ndimage import gaussian_filter, distance_transform_edt as edt
 from PIL import Image as _I, ImageDraw as _D
@@ -33,25 +33,8 @@ ALL = Shape(np.ones((H, W), bool))
 def nz(sig, seed):
     r = np.random.default_rng(seed)
     n = gaussian_filter(r.standard_normal((H, W)), sig); return n / n.std()
-def smooth(pts, n=3):
-    p = np.array(pts, float)
-    for _ in range(n):
-        q = np.roll(p, -1, 0)
-        p = np.stack([.75 * p + .25 * q, .25 * p + .75 * q], 1).reshape(-1, 2)
-    return [tuple(v) for v in p]
-def spray(region, sp, seed, solid=.96, dens=.7, holes=0.):
-    """一阶：区域里实实地盖上，边外喷出颗粒，越远越稀。sp 可以是一张图（各处喷多远不一样）。
-    holes：阶里面留几成针眼，底下那阶从针眼里透出来（木内、Kuver 的平涂里都有）"""
-    if ROUGH:
-        return region.astype(float) * solid
-    r = np.random.default_rng(seed)
-    dout = edt(~region)
-    dots = (r.random((H, W)) < dens * np.exp(-dout / np.maximum(sp, .5))) & (gaussian_filter(r.random((H, W)), .5) > .47)
-    inside = np.full((H, W), solid)
-    if holes:
-        g = gaussian_filter(r.random((H, W)), .7); g = (g - g.mean()) / g.std()
-        inside = np.where(g > np.quantile(g, 1 - holes), .25, solid)
-    return np.where(region, inside, dots * .95)
+if ROUGH:                                                        # 草稿：阶不喷，只看大块
+    spray = lambda region, sp, seed, solid=.96, **_: region.astype(float) * solid
 def ink(draw_fn, seed, SS=3):
     """在 3 倍大的灰度图上画小东西（细丝、籽、闪光），缩回来当蒙版"""
     im = _I.new('L', (W * SS, H * SS), 0); draw_fn(_D.Draw(im), np.random.default_rng(seed), SS)
@@ -309,9 +292,5 @@ def sparks(dr, r_, SS):
 fill(st.layer('闪', mask=ink(sparks, 95) * R0.mask), ALL, (1., .97, .93))
 
 # ---------- 8 纸：整张同一张纹，钉在画布上
-pg = np.random.default_rng(77)
-tooth = gaussian_filter(pg.standard_normal((H, W)), .7); tooth /= tooth.std()
-fiber = gaussian_filter(pg.standard_normal((H, W)), (.6, 3)); fiber /= fiber.std()
-paper = 1 - .06 * np.clip(tooth, 0, None) - .025 * fiber
-fill(st.layer('纸', mode='multiply'), ALL, np.repeat(np.clip(paper, 0, 1)[..., None], 3, 2), edge=HARD)
+fill(st.layer('纸', mode='multiply'), ALL, paper(H, W, 77), edge=HARD)
 look(st, OUT)

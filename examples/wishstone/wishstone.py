@@ -11,7 +11,7 @@ sys.path[:0] = [KB, KB + '/paint']
 import kbrush as K
 K.set_seed(7)
 from shapes import Shape
-from blocks import lasso, line, rim, soft, look
+from blocks import lasso, line, rim, soft, look, smooth, spray, paper
 from layers import Stack, fill, stroke, dip, dip_tip, HARD, SOFT, LOST
 from scipy.ndimage import gaussian_filter, distance_transform_edt as edt
 
@@ -20,20 +20,6 @@ yy, xx = np.mgrid[0:H, 0:W].astype(float)
 rng = np.random.default_rng(11)
 def nz(sig):
     n = gaussian_filter(rng.standard_normal((H, W)), sig); return n / n.std()
-def smooth(pts, n=3, closed=True):
-    p = np.array(pts, float)
-    for _ in range(n):
-        q = np.roll(p, -1, 0)
-        p = np.stack([.75 * p + .25 * q, .25 * p + .75 * q], 1).reshape(-1, 2)
-    return [tuple(v) for v in p]
-def open_smooth(pts, n=3):
-    p = np.array(pts, float)
-    for _ in range(n):
-        q = [p[0]]
-        for a, b in zip(p[:-1], p[1:]):
-            q += [.75 * a + .25 * b, .25 * a + .75 * b]
-        q.append(p[-1]); p = np.array(q)
-    return [tuple(v) for v in p]
 def mix(a, b, t):
     t = np.asarray(t, float)[..., None] if np.ndim(t) else t
     return np.asarray(a, float) * (1 - t) + np.asarray(b, float) * t
@@ -50,8 +36,8 @@ SUN = np.array([.75, .62])                       # 光往右下走（从左上�
 st = Stack(K.Paper(H, W, seed=3), ground='#b39890')
 
 # ---------- 1-2 沙和水：都是平的台阶（nerolette：俯视看不到横波纹；沙别模拟真沙）
-SHORE = open_smooth([(-20, 650), (90, 610), (170, 572), (250, 588), (330, 558), (400, 500), (470, 470), (520, 500),
-                     (560, 558), (620, 574), (690, 558), (730, 470), (760, 402), (820, 378), (850, 300), (920, 250)], 4)
+SHORE = smooth([(-20, 650), (90, 610), (170, 572), (250, 588), (330, 558), (400, 500), (470, 470), (520, 500),
+                     (560, 558), (620, 574), (690, 558), (730, 470), (760, 402), (820, 378), (850, 300), (920, 250)], 4, closed=False)
 def resample(pts, step=2.0):
     p = np.array(pts); seg = np.hypot(*np.diff(p, axis=0).T); s_ = np.r_[0, np.cumsum(seg)]
     t = np.arange(0, s_[-1], step); return np.c_[np.interp(t, s_, p[:, 0]), np.interp(t, s_, p[:, 1])], t
@@ -70,16 +56,11 @@ edge_p, edge_n = scallop(shore_p, shore_t, ARCS)
 film = lasso(H, W, [(-120, 700)] + [tuple(v) for v in edge_p] + [(1020, 230), (1020, -120), (-120, -120)], jag=1.0, scale=6, seed=3)
 ALL = Shape(np.ones((H, W), bool))
 wob = lambda amp, sig: amp * nz(sig)
-def step(region, spray, solid=.95):
-    """一阶：区域里实实地盖上，边外往外喷出颗粒，越远越稀"""
-    dout = edt(~region)
-    dots = (rng.random((H, W)) < .7 * np.exp(-dout / spray)) & (gaussian_filter(rng.random((H, W)), .5) > .47)
-    return np.where(region, solid, dots * .95)
 dsand = edt(~film.mask); dwater = edt(film.mask)
 fill(st.layer('沙'), ALL, (.77, .66, .60), edge=HARD)                           # 干一点的沙
 for k, (dist, col, sp) in enumerate(((190, (.69, .59, .57), 14), (55, (.61, .52, .53), 9))):   # 越贴水越湿越暗
     reg = ~film.mask & (dsand + wob(14, 25) < dist)
-    fill(st.layer(f'湿{k}', mask=step(reg, sp)), ALL, col, edge=HARD)
+    fill(st.layer(f'湿{k}', mask=spray(reg, sp, rng, .95)), ALL, col, edge=HARD)
 def shift(m, dy, dx):
     o = np.zeros_like(m); dy, dx = int(dy), int(dx)
     o[max(dy, 0):H + min(dy, 0), max(dx, 0):W + min(dx, 0)] = m[max(-dy, 0):H - max(dy, 0), max(-dx, 0):W - max(dx, 0)]
@@ -92,7 +73,7 @@ MODE = os.environ.get('MODE', 'rings')
 fill(st.layer('水'), film, (.70, .64, .66), edge=HARD)
 for k, (dist, col, sp) in enumerate(((40, (.64, .60, .67), 10), (120, (.58, .56, .68), 12), (240, (.52, .52, .68), 14))):
     reg = film.mask & (dwater + wob(10, 20) > dist)                   # 深浅是透过水看见的沙底：糙的，边喷开（nerolette）
-    fill(st.layer(f'深{k}', mask=step(reg, sp)), ALL, col, edge=HARD)
+    fill(st.layer(f'深{k}', mask=spray(reg, sp, rng, .95)), ALL, col, edge=HARD)
 # 水面上的泡沫线：两头收尖、中间鼓，有的地方分成两股再合上，围出扁扁的眼；边干净不喷（光滑的水面）。
 # 全画最亮最脆的白留给石头那两圈：水线压透、压灰；贴着水边最新的那道最亮，越旧越淡（nerolette 和 Claude，10.2 晚）
 RINGS = ((0, 2.4, (.94, .92, .93), .95), (40, 3, (.91, .89, .94), .8), (95, 3.4, (.88, .87, .94), .68),
@@ -229,9 +210,7 @@ for sel, ln, nm in ((s1, 295, '影1'), (s2, 237, '影2')):              # 圆尾
     far, core = cast(sel, ln)
     away = edt(~sel.mask)                                            # 离石头多远
     farm = (far.mask & (edt(far.mask) + wob(5, 18) > 6)) | (far.mask & (away < 80))   # 外沿往里收一点让它喷开；贴着石头两侧那两条细边不收，不然影子从石头后面出来先窄一截、尾巴鼓成一团（v41，nerolette 看出来的）
-    dout = edt(~farm)
-    dots = (rng.random((H, W)) < .7 * np.exp(-dout / (3 + .06 * away))) & (gaussian_filter(rng.random((H, W)), .5) > .47)
-    fill(st.layer(nm, mode='multiply', opacity=.8, mask=np.where(farm, .95, dots * .95)), ALL, SH)   # 一个太阳一个影子一个颜色：远了只是边虚
+    fill(st.layer(nm, mode='multiply', opacity=.8, mask=spray(farm, 3 + .06 * away, rng, .95)), ALL, SH)   # 一个太阳一个影子一个颜色：远了只是边虚
     lay = st.layer(nm + '缝', mode='multiply')               # 贴地那道缝：最深最锐，在背光的那半圈
     fill(lay, Shape((edt(~sel.mask) < 4) & ~sel.mask & (xx * SUN[0] + yy * SUN[1] > 0) & cast(sel, 10, 5, taper=False)[0].mask), (.45, .40, .55), edge=HARD)
 
@@ -244,13 +223,6 @@ def u_of(sel):
     return ((xx - cx) * SUN[0] + (yy - cy) * SUN[1]) / r       # -1 迎光 … +1 背光
 def ramp(v, a, b):
     t = np.clip((v - a) / (b - a), 0, 1); return t * t * (3 - 2 * t)
-def stone_step(region, spray, solid=.92):
-    """一阶：区域里实实地盖上（留一点针眼），边外往光那边喷出颗粒，越远越稀"""
-    tex = nz(.8)
-    inside = np.clip(solid + .12 * tex, 0, 1) * (tex > -2.2)
-    dout = edt(~region)
-    dots = (rng.random((H, W)) < .75 * np.exp(-dout / spray)) & (gaussian_filter(rng.random((H, W)), .5) > .47)
-    return np.where(region, inside, dots * .95)
 def stone(sel, i, base_c, steps):
     u = u_of(sel)
     wob = 4 * nz(12) / 100                                       # 台阶的边别是尺子拉的
@@ -258,9 +230,10 @@ def stone(sel, i, base_c, steps):
     spark = (nz(.6) > 3.1) & (u < .2)                              # 几粒亮的晶，只在迎光那边看得见
     c = np.where(spark[..., None], np.minimum(c + .3, 1), c)
     fill(st.layer(f'石{i}底'), sel, np.clip(c, 0, 1), edge=HARD)
-    for k, (lo, hi, col, spray) in enumerate(steps):
+    for k, (lo, hi, col, sp) in enumerate(steps):
         reg = (u + wob > lo) & (u + wob < hi)
-        fill(st.layer(f'石{i}阶{k}', mask=stone_step(reg, spray) * sel.mask), sel, col, edge=HARD)
+        tex = nz(.8)                                                 # 阶里不是一样实：深浅抖一点，留几个针眼
+        fill(st.layer(f'石{i}阶{k}', mask=spray(reg, sp, rng, np.clip(.92 + .12 * tex, 0, 1) * (tex > -2.2), dens=.75) * sel.mask), sel, col, edge=HARD)
     refl = np.clip(1 - edt(sel.mask) / 12, 0, 1) * ramp(u, .55, .95)
     fill(st.layer(f'石{i}反', mode='screen', mask=refl * .4), sel, (.42, .42, .58), edge=HARD)
     return u
@@ -272,25 +245,21 @@ u2 = stone(s2, 2, [.82, .56, .42], [(-.05, 9, (.62, .40, .44), 12), (.32, 9, (.4
 #   也是平铺的阶，不用刷子：这套画法自己就长得出质感，刷子有点赘余（nerolette）。v39 以前是两笔干笔，一层层的带子像海边常捡到的；一整条不断的更稀罕
 def band(pts, w, seed, shift_=0.):
     """一条带子的形：中线抹顺，两边按宽度偏出去，围成一块；shift_ 把带子往一侧挪（取它的一条边用）"""
-    c, _ = resample(open_smooth(pts, 3), 1.5)
+    c, _ = resample(smooth(pts, 3, closed=False), 1.5)
     d = np.gradient(c, axis=0); n = np.c_[d[:, 1], -d[:, 0]]; n /= np.linalg.norm(n, axis=1)[:, None]
     t = np.linspace(0, 1, len(c)); ww = np.array([w(v) for v in t])[:, None]
     lo = c + n * (shift_ - .5) * ww; hi = c + n * (shift_ + .5) * ww
     return lasso(H, W, [tuple(v) for v in lo] + [tuple(v) for v in hi[::-1]], jag=.9, scale=6, seed=seed)
-def embed(sel, inside, sp, seed):
-    """嵌在石头里的样子：带子实实地盖上，边往外喷一圈细颗粒（自己的随机数，不动全局的顺序）"""
-    r_ = np.random.default_rng(seed); dout = edt(~sel.mask)
-    dots = (r_.random((H, W)) < .7 * np.exp(-dout / sp)) & (gaussian_filter(r_.random((H, W)), .5) > .47)
-    return np.where(sel.mask, .95, dots * .95) * inside.mask
+#   嵌在石头里的样子：带子实实地盖上，边往外喷一圈细颗粒，只留在石头里（给的是种子，自己的随机数，不动 rng 的顺序）
 # 大的：一道细的，中间宽两头细（绕到背面去了）
 v1 = band([(566, 578), (588, 640), (586, 712), (560, 776), (514, 822)], lambda t: 5 + 9 * np.sin(np.pi * t), 21) & s1
-fill(st.layer('白1', mask=embed(v1, s1, 2.5, 31)), ALL, (.96, .93, .86), edge=HARD)
+fill(st.layer('白1', mask=spray(v1, 2.5, 31, .95) * s1.mask), ALL, (.96, .93, .86), edge=HARD)
 # 小的：宽的一条，两阶——奶白一整条，朝背光那边贴一条暖的（透光的那层）
 pts2 = [(262, 822), (296, 868), (345, 912), (400, 940), (446, 948)]
 v2 = band(pts2, lambda t: 30 + 14 * np.sin(np.pi * t), 22) & s2
-fill(st.layer('白2', mask=embed(v2, s2, 4, 32)), ALL, (.95, .90, .84), edge=HARD)
+fill(st.layer('白2', mask=spray(v2, 4, 32, .95) * s2.mask), ALL, (.95, .90, .84), edge=HARD)
 _w2 = band(pts2, lambda t: 30 + 14 * np.sin(np.pi * t), 23, shift_=.36) & v2
-fill(st.layer('白2暖', mask=embed(_w2, v2, 3, 33)), ALL, (.97, .84, .68), edge=HARD)
+fill(st.layer('白2暖', mask=spray(_w2, 3, 33, .95) * v2.mask), ALL, (.97, .84, .68), edge=HARD)
 # 白带上也有明暗：背光那半罩一层冷的，可小的那块透光，背光那半反而暖
 fill(st.layer('白上冷', mode='multiply', mask=soft(Shape(s1.mask & (u1 > .15)), feather=18)), s1, (.80, .80, .92))
 fill(st.layer('透', mode='screen', opacity=.35, mask=soft(Shape(s2.mask & (u2 > .2)), feather=20)), s2, (.85, .55, .30))
@@ -299,7 +268,7 @@ fill(st.layer('透', mode='screen', opacity=.35, mask=soft(Shape(s2.mask & (u2 >
 for i, sel in enumerate((s1, s2)):
     ys, xs = np.nonzero(sel.mask); cy, cx = ys.mean(), xs.mean(); r = np.sqrt(sel.mask.sum() / np.pi)
     d = np.hypot((xx - (cx - .12 * r)) / (r * .75), (yy - (cy - .2 * r)) / (r * .45))
-    fill(st.layer(f'天{i}', mode='screen', opacity=.35, mask=step((d + .15 * nz(10) < .62) & sel.mask, 6) * sel.mask), sel, (.55, .52, .66), edge=HARD)
+    fill(st.layer(f'天{i}', mode='screen', opacity=.35, mask=spray((d + .15 * nz(10) < .62) & sel.mask, 6, rng, .95) * sel.mask), sel, (.55, .52, .66), edge=HARD)
     u = u_of(sel)
     lip = sel.mask & (edt(sel.mask) < 1.5 + 1.5 * np.clip(-u - .6, 0, 1) * (nz(6) > -.3)) & (u < -.7)
     fill(st.layer(f'金边{i}'), Shape(lip), (1, .88, .66), edge=HARD, opacity=.9)
@@ -308,9 +277,5 @@ for i, sel in enumerate((s1, s2)):
 
 # （回流的细线去掉了：在这张里读成了石头在飞的速度线）
 # ---------- 8 纸：整张同一张纹，钉在画布上
-pg = np.random.default_rng(77)
-tooth = gaussian_filter(pg.standard_normal((H, W)), .7); tooth /= tooth.std()
-fiber = gaussian_filter(pg.standard_normal((H, W)), (.6, 3)); fiber /= fiber.std()
-paper = 1 - .06 * np.clip(tooth, 0, None) - .025 * fiber
-fill(st.layer('纸', mode='multiply'), ALL, np.repeat(np.clip(paper, 0, 1)[..., None], 3, 2), edge=HARD)
+fill(st.layer('纸', mode='multiply'), ALL, paper(H, W, 77), edge=HARD)
 look(st, 'render.png')                              # 成品是同一文件夹的 wishstone.png（v41）
